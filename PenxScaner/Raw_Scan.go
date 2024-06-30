@@ -37,7 +37,7 @@ func tcpAckScan(wg *sync.WaitGroup, targetIP, localIP string, port int, portChan
 
 	ipLayer := &layers.IPv4{
 		Version:  4,
-		IHL:      5, // IP Header Length: 20 bytes (5 * 4 bytes)
+		IHL:      5, 
 		TOS:      0,
 		Id:       54321,
 		Flags:    layers.IPv4DontFragment,
@@ -54,6 +54,7 @@ func tcpAckScan(wg *sync.WaitGroup, targetIP, localIP string, port int, portChan
 		Window:  30600,
 		ACK:     true,
 	}
+
 
 	if err := tcpLayer.SetNetworkLayerForChecksum(ipLayer); err != nil {
 		log.Printf("Failed to set network layer for checksum: %v\n", err)
@@ -72,7 +73,7 @@ func tcpAckScan(wg *sync.WaitGroup, targetIP, localIP string, port int, portChan
 	}
 	packetData := buffer.Bytes()
 
-	conn, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_RAW, syscall.IPPROTO_TCP) 
+	conn, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_RAW, syscall.IPPROTO_IP) 
 	if err != nil {
 		log.Printf("Failed to create raw socket: %v\n", err)
 		return
@@ -88,5 +89,30 @@ func tcpAckScan(wg *sync.WaitGroup, targetIP, localIP string, port int, portChan
 		return
 	}
 
-	portChan <- port
+	// Listen for responses
+	var listenWG sync.WaitGroup
+	listenWG.Add(1)
+	go listenResponse(conn, port, portChan, &listenWG)
+
+	listenWG.Wait()
+}
+
+func listenResponse(conn syscall.Handle, port int, portChan chan int, wg *sync.WaitGroup) {
+	defer wg.Done()
+	buffer := make([]byte, 2048)
+
+	for {
+		n, _, err := syscall.Recvfrom(conn, buffer, 0)
+		if err != nil {
+			log.Printf("Failed to receive response for port %d: %v\n", port, err)
+			return
+		}
+
+		fmt.Printf("Received response on port %d: %s\n", port, buffer[:n])
+
+		if n > 0 {
+			portChan <- port
+			return
+		}
+	}
 }
