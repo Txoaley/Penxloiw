@@ -1,11 +1,12 @@
 package main
-//Root/Administrator or Administrator permission required
+
 import (
 	"fmt"
 	"log"
 	"net"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
@@ -17,7 +18,7 @@ func main() {
 	var wg sync.WaitGroup
 	portChan := make(chan int)
 
-	for port := 1; port <= 65535; port++ { 
+	for port := 1; port <= 65535; port++ {
 		wg.Add(1)
 		go tcpAckScan(&wg, targetIP, localIP, port, portChan)
 	}
@@ -35,9 +36,16 @@ func main() {
 func tcpAckScan(wg *sync.WaitGroup, targetIP, localIP string, port int, portChan chan int) {
 	defer wg.Done()
 
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", targetIP, port), time.Second)
+	if err != nil {
+		log.Printf("Port %d is closed\n", port)
+		return
+	}
+	defer conn.Close()
+
 	ipLayer := &layers.IPv4{
 		Version:  4,
-		IHL:      5, 
+		IHL:      5,
 		TOS:      0,
 		Id:       54321,
 		Flags:    layers.IPv4DontFragment,
@@ -55,7 +63,6 @@ func tcpAckScan(wg *sync.WaitGroup, targetIP, localIP string, port int, portChan
 		ACK:     true,
 	}
 
-
 	if err := tcpLayer.SetNetworkLayerForChecksum(ipLayer); err != nil {
 		log.Printf("Failed to set network layer for checksum: %v\n", err)
 		return
@@ -66,24 +73,24 @@ func tcpAckScan(wg *sync.WaitGroup, targetIP, localIP string, port int, portChan
 		FixLengths:       true,
 		ComputeChecksums: true,
 	}
-	err := gopacket.SerializeLayers(buffer, opts, ipLayer, tcpLayer)
+	err = gopacket.SerializeLayers(buffer, opts, ipLayer, tcpLayer)
 	if err != nil {
 		log.Printf("Failed to serialize packet for port %d: %v\n", port, err)
 		return
 	}
 	packetData := buffer.Bytes()
 
-	conn, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_RAW, syscall.IPPROTO_IP) 
+	rawConn, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_RAW, syscall.IPPROTO_IP)
 	if err != nil {
 		log.Printf("Failed to create raw socket: %v\n", err)
 		return
 	}
-	defer syscall.Close(conn)
+	defer syscall.Close(rawConn)
 
 	var dstAddr syscall.SockaddrInet4
 	copy(dstAddr.Addr[:], net.ParseIP(targetIP).To4())
 
-	err = syscall.Sendto(conn, packetData, 0, &dstAddr)
+	err = syscall.Sendto(rawConn, packetData, 0, &dstAddr)
 	if err != nil {
 		log.Printf("Failed to send packet for port %d: %v\n", port, err)
 		return
@@ -92,7 +99,7 @@ func tcpAckScan(wg *sync.WaitGroup, targetIP, localIP string, port int, portChan
 	// Listen for responses
 	var listenWG sync.WaitGroup
 	listenWG.Add(1)
-	go listenResponse(conn, port, portChan, &listenWG)
+	go listenResponse(rawConn, port, portChan, &listenWG)
 
 	listenWG.Wait()
 }
