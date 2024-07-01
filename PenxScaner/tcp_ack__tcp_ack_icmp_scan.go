@@ -254,7 +254,7 @@ func Ack_İcmp_Scan(ip string, port int, ack_payload []byte, openPorts chan int,
 }
 
 func aktiflik(ip string) {
-	// ICMP Echo isteği oluştur
+
 	echoRequest := icmp.Message{
 		Type: ipv4.ICMPTypeEcho,
 		Code: 0,
@@ -265,7 +265,7 @@ func aktiflik(ip string) {
 		},
 	}
 
-	// ICMP bağlantısı aç
+
 	c, err := net.Dial("ip4:icmp", ip)
 	if err != nil {
 		fmt.Println("Hedefe bağlanılamadı:", err)
@@ -273,21 +273,21 @@ func aktiflik(ip string) {
 	}
 	defer c.Close()
 
-	// Echo isteğini serialize et
+
 	echoRequestBytes, err := echoRequest.Marshal(nil)
 	if err != nil {
 		fmt.Println("ICMP paketi oluşturma hatası:", err)
 		return
 	}
 
-	// ICMP Echo isteğini gönder
+
 	_, err = c.Write(echoRequestBytes)
 	if err != nil {
 		fmt.Println("ICMP paketi gönderme hatası:", err)
 		return
 	}
 
-	// ICMP Echo yanıtını al
+
 	reply := make([]byte, 1500)
 	c.SetReadDeadline(time.Now().Add(2 * time.Second))
 	n, err := c.Read(reply)
@@ -296,14 +296,13 @@ func aktiflik(ip string) {
 		return
 	}
 
-	// ICMP Echo yanıtını parse et
+
 	echoReply, err := icmp.ParseMessage(1, reply[:n])
 	if err != nil {
 		fmt.Println("ICMP yanıtını ayrıştırma hatası:", err)
 		return
 	}
 
-	// Yanıt türüne göre durumu belirle
 	switch echoReply.Type {
 	case ipv4.ICMPTypeEchoReply:
 		fmt.Println("Hedef aktif!")
