@@ -22,12 +22,12 @@ type scanData struct {
 	stopChan  chan struct{}
 }
 
-type packet struct {
-	ipLayer      *layers.IPv4
-	ackPacket    []byte
-	windowPacket []byte
-	nullPacket   []byte
-	xmasPacket   []byte
+type Packet struct {
+	AckPacket    []byte
+	WindowPacket []byte
+	NullPacket   []byte
+	XmasPacket   []byte
+	UdpPacket    []byte
 }
 
 func main() {
@@ -40,7 +40,7 @@ func main() {
 	sd.openPorts = make(chan int, 100)
 	sd.stopChan = make(chan struct{})
 
-	go aktiflik(sd.ip) // Hedefin aktif olup olmadığını kontrol eder
+	go aktiflik(sd.ip)
 
 	packets, err := createPackets(sd.lhost, sd.ip, sd.port)
 	if err != nil {
@@ -50,7 +50,7 @@ func main() {
 	var wg sync.WaitGroup
 
 	wg.Add(1)
-	go TcpAckScan(&wg, sd.ip, sd.lhost, packets.ackPacket, sd.openPorts, sd.stopChan)
+	go TcpAckScan(&wg, sd.ip, sd.lhost, packets.AckPacket, sd.openPorts, sd.stopChan)
 
 	go func() {
 		wg.Wait()
@@ -66,13 +66,23 @@ func main() {
 	}()
 	for port := 1; port <= 65535; port++ {
 		wg.Add(1)
-		Ack_İcmp_Scan(sd.ip, port, packets.ackPacket, sd.openPorts, sd.stopChan)
+		Ack_İcmp_Scan(sd.ip, port, packets.AckPacket, sd.openPorts, sd.stopChan)
+	}
+
+	for port := 1; port <= 65535; port++ {
+		wg.Add(1)
+		go os_data(sd.ip, port, &wg)
+	}
+
+	for port := 1; port <= 65535; port++ {
+		wg.Add(1)
+		go windows_scan(sd.ip, port, sd.stopChan, &wg, packets.WindowPacket)
 	}
 
 	wg.Wait()
 }
 
-func createPackets(localIP, targetIP string, port int) (packet, error) {
+func createPackets(localIP, targetIP string, port int) (Packet, error) {
 	ipLayer := &layers.IPv4{
 		Version:  4,
 		IHL:      5,
@@ -84,6 +94,7 @@ func createPackets(localIP, targetIP string, port int) (packet, error) {
 		SrcIP:    net.ParseIP(localIP).To4(),
 		DstIP:    net.ParseIP(targetIP).To4(),
 	}
+
 	ackPacket := &layers.TCP{
 		SrcPort: layers.TCPPort(port),
 		DstPort: layers.TCPPort(port),
@@ -91,17 +102,23 @@ func createPackets(localIP, targetIP string, port int) (packet, error) {
 		Window:  30600,
 		ACK:     true,
 	}
+	ackPacket.SetNetworkLayerForChecksum(ipLayer)
+
 	windowPacket := &layers.TCP{
 		SrcPort: layers.TCPPort(port),
 		DstPort: layers.TCPPort(port),
 		Seq:     0,
 		Window:  30600,
 	}
+	windowPacket.SetNetworkLayerForChecksum(ipLayer)
+
 	nullPacket := &layers.TCP{
 		SrcPort: layers.TCPPort(port),
 		DstPort: layers.TCPPort(port),
 		Seq:     0,
 	}
+	nullPacket.SetNetworkLayerForChecksum(ipLayer)
+
 	xmasPacket := &layers.TCP{
 		SrcPort: layers.TCPPort(port),
 		DstPort: layers.TCPPort(port),
@@ -111,35 +128,91 @@ func createPackets(localIP, targetIP string, port int) (packet, error) {
 		PSH:     true,
 		RST:     true,
 	}
+	xmasPacket.SetNetworkLayerForChecksum(ipLayer)
+
+	ip_udp := &layers.IPv4{
+		SrcIP:    net.ParseIP(localIP).To4(),
+		DstIP:    net.ParseIP(targetIP).To4(),
+		Version:  4,
+		TTL:      64,
+		Protocol: layers.IPProtocolUDP,
+	}
+
+	udp := &layers.UDP{
+		SrcPort: layers.UDPPort(12345),
+		DstPort: layers.UDPPort(53),
+	}
+	udp.SetNetworkLayerForChecksum(ip_udp)
+	payload := gopacket.Payload([]byte("help\r\n"))
+
+	buffer := gopacket.NewSerializeBuffer()
+	opts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}
+	err := gopacket.SerializeLayers(buffer, opts, ip_udp, udp, payload)
+	if err != nil {
+		return Packet{}, err
+	}
 
 	bufferAck := gopacket.NewSerializeBuffer()
-	opts := gopacket.SerializeOptions{}
 	if err := gopacket.SerializeLayers(bufferAck, opts, ipLayer, ackPacket); err != nil {
-		return packet{}, err
+		return Packet{}, err
 	}
 
 	bufferWindow := gopacket.NewSerializeBuffer()
 	if err := gopacket.SerializeLayers(bufferWindow, opts, ipLayer, windowPacket); err != nil {
-		return packet{}, err
+		return Packet{}, err
 	}
 
 	bufferNull := gopacket.NewSerializeBuffer()
 	if err := gopacket.SerializeLayers(bufferNull, opts, ipLayer, nullPacket); err != nil {
-		return packet{}, err
+		return Packet{}, err
 	}
 
 	bufferXmas := gopacket.NewSerializeBuffer()
 	if err := gopacket.SerializeLayers(bufferXmas, opts, ipLayer, xmasPacket); err != nil {
-		return packet{}, err
+		return Packet{}, err
 	}
 
-	return packet{
-		ipLayer:      ipLayer,
-		ackPacket:    bufferAck.Bytes(),
-		windowPacket: bufferWindow.Bytes(),
-		nullPacket:   bufferNull.Bytes(),
-		xmasPacket:   bufferXmas.Bytes(),
+	return Packet{
+		AckPacket:    bufferAck.Bytes(),
+		WindowPacket: bufferWindow.Bytes(),
+		NullPacket:   bufferNull.Bytes(),
+		XmasPacket:   bufferXmas.Bytes(),
+		UdpPacket:    buffer.Bytes(),
 	}, nil
+}
+
+func windows_scan(ip string, port int, stopchan chan struct{}, wg *sync.WaitGroup, windowPacket []byte) {
+	defer wg.Done()
+
+	ln, err := net.Listen("tcp", fmt.Sprintf("%s:%d", ip, port))
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer ln.Close()
+
+	conn, err := net.Dial("tcp", fmt.Sprintf("%s:%d", ip, port))
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer conn.Close()
+
+	_, err = conn.Write(windowPacket)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	go func() {
+		<-stopchan
+		ln.Close()
+	}()
+
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		go handleConnection(conn)
+	}
 }
 
 func TcpAckScan(wg *sync.WaitGroup, ip string, lhost string, ackPacket []byte, openPorts chan int, stopChan chan struct{}) {
@@ -150,17 +223,15 @@ func TcpAckScan(wg *sync.WaitGroup, ip string, lhost string, ackPacket []byte, o
 		go func(port int) {
 			defer wg.Done()
 
-			// Dinlemeye başla
 			go listen(lhost, port, stopChan, wg)
 
-			// Paketi gönder
 			conn, err := net.Dial("tcp", fmt.Sprintf("%s:%d", ip, port))
 			if err != nil {
 				return
 			}
 			defer conn.Close()
 
-			_, err = conn.Write(ackPacket) // Örnek veri gönderimi
+			_, err = conn.Write(ackPacket)
 			if err != nil {
 				return
 			}
@@ -176,6 +247,19 @@ func TcpAckScan(wg *sync.WaitGroup, ip string, lhost string, ackPacket []byte, o
 		}(port)
 	}
 }
+
+//	Version       = <must be specified>
+//	Len           = <must be specified>
+//	TOS           = <must be specified>
+//	TotalLen      = <must be specified>
+//	ID            = platform sets an appropriate value if ID is zero
+//	FragOff       = <must be specified>
+//	TTL           = <must be specified>
+//	Protocol      = <must be specified>
+//	Checksum      = platform sets an appropriate value if Checksum is zero
+//	Src           = platform sets an appropriate value if Src is nil
+//	Dst           = <must be specified>
+//	Options       = optional
 
 func listen(ip string, port int, stopChan chan struct{}, wg *sync.WaitGroup) {
 	defer wg.Done()
@@ -199,6 +283,38 @@ func listen(ip string, port int, stopChan chan struct{}, wg *sync.WaitGroup) {
 	}
 }
 
+func os_data(ip string, port int, wg *sync.WaitGroup) {
+	defer wg.Done()
+
+	conn, err := net.Dial("tcp", fmt.Sprintf("%s:%d", ip, port))
+	if err != nil {
+		fmt.Printf("Bağlantı kurulamadı: %v\n", err)
+		return
+	}
+	
+	defer conn.Close()
+
+	buffer := make([]byte, 1024)
+	n, err := conn.Read(buffer)
+	if err != nil {
+		fmt.Printf("Yanıt alınamadı: %v\n", err)
+		return
+	}
+
+	fmt.Printf("Kaynaktan alınan yanıt: %s\n", buffer[:n])
+
+	message := "help\r\n"
+	_, err = conn.Write([]byte(message))
+	if err != nil {
+		fmt.Printf("Veri gönderimi başarısız oldu: %v\n", err)
+		return
+	}
+
+	conn.Read(buffer)
+	fmt.Print(buffer)
+
+}
+
 func handleConnection(conn net.Conn) {
 	defer conn.Close()
 	buffer := make([]byte, 2048)
@@ -209,47 +325,53 @@ func handleConnection(conn net.Conn) {
 	}
 	fmt.Printf("Gelen veri: %s\n", string(buffer))
 }
-func Ack_İcmp_Scan(ip string, port int, ack_payload []byte, openPorts chan int, stopChan chan struct{}) {
-	echoRequest := icmp.Message{
+
+func Ack_İcmp_Scan(ip string, port int, ackPacket []byte, openPorts chan int, stopChan chan struct{}) {
+	conn, err := net.Dial("ip4:icmp", ip)
+	if err != nil {
+		log.Fatalf("Bağlantı kurulamadı: %v", err)
+	}
+	defer conn.Close()
+
+	message := icmp.Message{
 		Type: ipv4.ICMPTypeEcho,
 		Code: 0,
 		Body: &icmp.Echo{
 			ID:   os.Getpid() & 0xffff,
 			Seq:  1,
-			Data: ack_payload,
+			Data: ackPacket,
 		},
 	}
 
-	echoRequestBytes, err := echoRequest.Marshal(nil)
+	messageBytes, err := message.Marshal(nil)
 	if err != nil {
+		log.Fatalf("ICMP paketi oluşturulamadı: %v", err)
 	}
 
-	c, err := net.Dial("ip4:icmp", ip)
-	if err != nil {
-	}
-	defer c.Close()
-
-	_, err = c.Write(echoRequestBytes)
-	if err != nil {
+	if _, err := conn.Write(messageBytes); err != nil {
+		log.Fatalf("ICMP paketi gönderilemedi: %v", err)
 	}
 
-	reply := make([]byte, 1500)
-	c.SetReadDeadline(time.Now().Add(2 * time.Second))
-	n, err := c.Read(reply)
+	buffer := make([]byte, 1500)
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	n, err := conn.Read(buffer)
 	if err != nil {
+		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+			return
+		}
+		log.Fatalf("ICMP paketi okunamadı: %v", err)
 	}
 
-	echoReply, err := icmp.ParseMessage(1, reply[:n])
+	packet, err := icmp.ParseMessage(1, buffer[:n])
 	if err != nil {
-		return
+		log.Fatalf("ICMP paketi çözümlenemedi: %v", err)
 	}
 
-	switch echoReply.Type {
+	switch packet.Type {
 	case ipv4.ICMPTypeEchoReply:
-		fmt.Printf("%s:%d portu açık\n", ip, port)
+		fmt.Printf("%d portu açık\n", port)
 		openPorts <- port
 	default:
-		fmt.Printf("%s:%d portu kapalı\n", ip, port)
 	}
 }
 
@@ -261,10 +383,9 @@ func aktiflik(ip string) {
 		Body: &icmp.Echo{
 			ID:   os.Getpid() & 0xffff,
 			Seq:  1,
-			Data: []byte("Hello"),
+			Data: []byte(" HELP\r\n"),
 		},
 	}
-
 
 	c, err := net.Dial("ip4:icmp", ip)
 	if err != nil {
@@ -273,33 +394,25 @@ func aktiflik(ip string) {
 	}
 	defer c.Close()
 
-
 	echoRequestBytes, err := echoRequest.Marshal(nil)
 	if err != nil {
-		fmt.Println("ICMP paketi oluşturma hatası:", err)
 		return
 	}
-
 
 	_, err = c.Write(echoRequestBytes)
 	if err != nil {
-		fmt.Println("ICMP paketi gönderme hatası:", err)
 		return
 	}
-
 
 	reply := make([]byte, 1500)
 	c.SetReadDeadline(time.Now().Add(2 * time.Second))
 	n, err := c.Read(reply)
 	if err != nil {
-		fmt.Println("Hedef aktif değil veya yanıt vermedi.")
 		return
 	}
 
-
 	echoReply, err := icmp.ParseMessage(1, reply[:n])
 	if err != nil {
-		fmt.Println("ICMP yanıtını ayrıştırma hatası:", err)
 		return
 	}
 
