@@ -18,3 +18,6 @@ Açıklıyayım:
 Peki diğerlerinden farkı ne?
 
 Hız, performans ve özellikleri.
+
+
+Şuanda kodlarda hatalar olabilmektedir. İleriki zamanlarda hataları düzeltip yeni kodlar ekliyeceğiz.
