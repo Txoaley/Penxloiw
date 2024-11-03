@@ -4,7 +4,7 @@ Bu toolu neden kullanabilirsiniz?
 Açıklıyayım:
   Tarama özellikleri olucak, seçenekler bol olucak.
   Elimizden geldiğince 2024 Exploitlerini bulunduracak
-  Shell, trojan ve backdoor hazır olarak yapabilşiceksiniz. 
+  Shell, trojan ve backdoor hazır olarak yapabileceksiniz. 
   Yetki yükseltme özellikleri eklenicek
   Wifi saldırıları
   Wpa/wpa2 handshake capture eklenicek
